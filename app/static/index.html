@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>虚拟盘零块回收演示</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+<header>
+  <h1>虚拟盘零块回收（4 KiB 块 / raw 稀疏镜像）</h1>
+  <p class="hint">空洞不占宿主空间；写过的零块占空间但可打洞回收；打洞不改容量、不改读值。</p>
+</header>
+
+<section class="cards">
+  <div class="card"><div class="label">镜像路径</div><div id="f-path" class="mono">-</div></div>
+  <div class="card"><div class="label">逻辑容量</div><div id="f-capacity" class="num">-</div></div>
+  <div class="card"><div class="label">宿主实占字节</div><div id="f-actual" class="num highlight">-</div></div>
+  <div class="card"><div class="label">已回收字节</div><div id="f-reclaimed" class="num ok">-</div></div>
+</section>
+
+<section class="legend">
+  <span><i class="sw hole"></i>空洞 hole（不占空间）</span>
+  <span><i class="sw zero"></i>写过的零块 zero（可回收）</span>
+  <span><i class="sw data"></i>非零块 data</span>
+</section>
+
+<section class="panel">
+  <h2>回收任务</h2>
+  <div class="row">
+    <button id="btn-start">发起回收</button>
+    <button id="btn-cancel" disabled>中断回收</button>
+    <span id="reclaim-state" class="state">空闲</span>
+  </div>
+  <div class="progress">
+    <div class="bar"><div id="bar-fill"></div></div>
+    <div id="progress-text" class="mono small">0 / 0 块</div>
+  </div>
+  <table class="kv">
+    <tr><td>已扫描（已分配）块</td><td id="r-scanned" class="mono">0</td></tr>
+    <tr><td>已打洞块</td><td id="r-punched" class="mono">0</td></tr>
+    <tr><td>跳过的非零块</td><td id="r-skipped" class="mono">0</td></tr>
+    <tr><td>回收前实占 / 当前实占</td><td id="r-before-after" class="mono">- / -</td></tr>
+    <tr><td>错误</td><td id="r-error" class="mono err">-</td></tr>
+  </table>
+</section>
+
+<section class="panel">
+  <h2>块布局（点击任一块查看 / 读写，共 <span id="block-count">0</span> 块 × 4 KiB）</h2>
+  <div id="grid" class="grid"></div>
+</section>
+
+<section class="panel">
+  <h2>块读写 — 当前块 <span id="sel-index">-</span></h2>
+  <div class="row">
+    <button id="btn-read">模拟虚拟机读（4KiB）</button>
+    <button id="btn-write-zero">写全零块</button>
+    <button id="btn-write-data">写非零图案</button>
+    <button id="btn-write-hex">按 Hex 写入</button>
+  </div>
+  <textarea id="hex-input" rows="3" placeholder="十六进制输入，需恰好 8192 个 hex 字符（4096 字节）"></textarea>
+  <div class="block-view">
+    <div>状态：<b id="sel-state">-</b></div>
+    <div class="mono small" id="sel-hex"></div>
+    <div class="mono small" id="sel-ascii"></div>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>事件日志</h2>
+  <div id="log" class="log mono small"></div>
+</section>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+services:
+  disk-reclaim:
+    build: .
+    image: disk-reclaim:latest
+    container_name: disk-reclaim
+    ports:
+      - "8000:8000"
+    environment:
+      # 预置镜像块数（每块 4 KiB），256 块 = 1 MiB
+      BLOCK_COUNT: "256"
+      IMAGE_PATH: "/data/disk.raw"
+      PORT: "8000"
+    volumes:
+      # 命名卷持久化 raw 镜像；docker 会自动创建，默认在 ext4 之上，支持打洞
+      - disk-data:/data
+    restart: unless-stopped
+
+volumes:
+  disk-data:
