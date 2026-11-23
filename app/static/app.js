@@ -3,6 +3,10 @@
 const $ = (id) => document.getElementById(id);
 let selected = null;
 let lastActual = null;
+let dirtySet = new Set();
+let firstRefresh = true;
+let flushBusyMsg = null;
+let flushBusyUntil = 0;
 
 async function api(path, options = {}) {
   const resp = await fetch(path, {
@@ -42,8 +46,9 @@ function renderGrid(blocks) {
   } else {
     blocks.forEach((state, i) => {
       const cell = grid.children[i];
-      cell.className = `cell ${state}${i === selected ? " selected" : ""}`;
-      cell.title = `块 ${i}：${state}`;
+      const dirty = dirtySet.has(i);
+      cell.className = `cell ${state}${dirty ? " dirty" : ""}${i === selected ? " selected" : ""}`;
+      cell.title = `块 ${i}：${state}${dirty ? "（待刷盘）" : ""}`;
     });
   }
 }
@@ -84,6 +89,26 @@ async function refresh() {
   $("f-actual").textContent = `${fmt(s.actual_bytes)} B`;
   $("block-count").textContent = s.block_count;
 
+  const f = status.flush;
+  dirtySet = new Set(f.dirty_blocks || []);
+  $("f-pending").textContent = fmt(f.pending_blocks);
+  $("fl-pending").textContent = f.pending_blocks;
+  $("fl-last").textContent = f.last_finished_at
+    ? `${f.last_batch_blocks} 块 / ${f.last_duration_ms} ms`
+    : "-";
+  $("fl-rounds").textContent = f.rounds_completed;
+  $("fl-recovered").textContent = f.recovered_blocks;
+  $("fl-error").textContent = f.last_error || "-";
+  let flushText = "空闲";
+  if (f.running) flushText = "刷盘进行中…";
+  else if (f.last_error) flushText = "上次刷盘失败";
+  else if (f.last_finished_at) flushText = `上次刷盘完成（提交 ${f.last_batch_blocks} 块）`;
+  if (flushBusyMsg && Date.now() < flushBusyUntil) flushText = flushBusyMsg;
+  $("flush-state").textContent = flushText;
+  if (firstRefresh && f.recovered_blocks > 0) {
+    log(`启动恢复：上一进程在刷盘中途退出，已从恢复记录重放 ${f.recovered_blocks} 块（整批保留）`, "warn");
+  }
+
   const r = status.reclaim;
   $("f-reclaimed").textContent = `${fmt(r.reclaimed_bytes)} B`;
   const denom = r.total_blocks || 1;
@@ -112,6 +137,7 @@ async function refresh() {
     log(`宿主实占变化：${fmt(lastActual)} → ${fmt(s.actual_bytes)} B（${delta > 0 ? "+" : ""}${fmt(delta)}）`);
   }
   lastActual = s.actual_bytes;
+  firstRefresh = false;
 }
 
 async function busy(fn, okMsg) {
@@ -125,6 +151,23 @@ async function busy(fn, okMsg) {
   }
 }
 
+$("btn-flush").addEventListener("click", async () => {
+  try {
+    const r = await api("/api/flush", { method: "POST" });
+    if (r.committed_blocks === 0) {
+      log("刷盘完成：缓存为空，无需提交", "ok");
+    } else {
+      log(`刷盘完成：本批 ${r.committed_blocks} 块已写入 raw 镜像（耗时 ${r.duration_ms} ms）`, "ok");
+    }
+  } catch (err) {
+    // 一轮未结束时再次发起：服务端返回 409，页面提示忙（保留约 3 秒）
+    log(`刷盘未执行：${err.message}`, "warn");
+    flushBusyMsg = `忙：${err.message}`;
+    flushBusyUntil = Date.now() + 3000;
+  }
+  await refresh();
+  await refreshBlockDetail();
+});
 $("btn-start").addEventListener("click", () =>
   busy(async () => {
     const r = await api("/api/reclaim/start", { method: "POST" });
@@ -147,26 +190,26 @@ $("btn-read").addEventListener("click", () =>
 $("btn-write-zero").addEventListener("click", () =>
   busy(async () => {
     if (selected === null) throw new Error("请先在网格中选择一个块");
-    await api(`/api/blocks/${selected}/write-pattern/zero`, { method: "POST" });
-    log(`写块 ${selected}：4KiB 全零（已分配零块，可被回收）`);
+    const r = await api(`/api/blocks/${selected}/write-pattern/zero`, { method: "POST" });
+    log(`写块 ${selected}：4KiB 全零（已进缓存，待刷盘块数=${r.pending_blocks}；刷盘后成为可回收零块）`);
   })
 );
 $("btn-write-data").addEventListener("click", () =>
   busy(async () => {
     if (selected === null) throw new Error("请先在网格中选择一个块");
-    await api(`/api/blocks/${selected}/write-pattern/data`, { method: "POST" });
-    log(`写块 ${selected}：非零图案（不会被回收）`);
+    const r = await api(`/api/blocks/${selected}/write-pattern/data`, { method: "POST" });
+    log(`写块 ${selected}：非零图案（已进缓存，待刷盘块数=${r.pending_blocks}）`);
   })
 );
 $("btn-write-hex").addEventListener("click", () =>
   busy(async () => {
     if (selected === null) throw new Error("请先在网格中选择一个块");
     const hex = $("hex-input").value.trim();
-    await api(`/api/blocks/${selected}/write`, {
+    const r = await api(`/api/blocks/${selected}/write`, {
       method: "POST",
       body: JSON.stringify({ hex }),
     });
-    log(`写块 ${selected}：自定义 Hex 共 ${hex.length / 2} 字节`);
+    log(`写块 ${selected}：自定义 Hex 共 ${hex.length / 2} 字节（已进缓存，待刷盘块数=${r.pending_blocks}）`);
   })
 );
 

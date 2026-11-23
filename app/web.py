@@ -13,9 +13,11 @@ def create_app(image_path: str | None = None, block_count: int = DEFAULT_BLOCK_C
 
     image_path = image_path or os.environ.get("IMAGE_PATH", "/data/disk.raw")
     block_count = int(os.environ.get("BLOCK_COUNT", str(block_count)))
+    # 演练钩子：>0 时刷盘在“日志已提交/每块回写前”各睡该毫秒数，放大掉电窗口
+    flush_delay_ms = int(os.environ.get("FLUSH_DELAY_MS", "0"))
 
     disk = create_image(image_path, block_count)
-    core = ApiCore(disk)
+    core = ApiCore(disk, flush_delay_ms=flush_delay_ms)
 
     static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
     app = Flask(__name__, static_folder=static_dir, static_url_path="/static")
@@ -56,6 +58,10 @@ def create_app(image_path: str | None = None, block_count: int = DEFAULT_BLOCK_C
     @app.post("/api/blocks/<int:index>/write-pattern/<kind>")
     def write_pattern(index: int, kind: str):
         return jsonify(core.write_pattern(index, kind))
+
+    @app.post("/api/flush")
+    def flush():
+        return jsonify(core.flush())
 
     @app.post("/api/reclaim/start")
     def reclaim_start():

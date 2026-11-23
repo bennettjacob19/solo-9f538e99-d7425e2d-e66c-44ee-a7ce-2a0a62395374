@@ -8,14 +8,15 @@
 </head>
 <body>
 <header>
-  <h1>虚拟盘零块回收（4 KiB 块 / raw 稀疏镜像）</h1>
-  <p class="hint">空洞不占宿主空间；写过的零块占空间但可打洞回收；打洞不改容量、不改读值。</p>
+  <h1>虚拟盘零块回收 + 写回缓存刷盘演练（4 KiB 块 / raw 稀疏镜像）</h1>
+  <p class="hint">写入先进内存缓存、读立即生效；点“立即刷盘”才把一批写入落进 raw 镜像。空洞不占宿主空间；写过的零块占空间但可打洞回收。</p>
 </header>
 
 <section class="cards">
   <div class="card"><div class="label">镜像路径</div><div id="f-path" class="mono">-</div></div>
   <div class="card"><div class="label">逻辑容量</div><div id="f-capacity" class="num">-</div></div>
   <div class="card"><div class="label">宿主实占字节</div><div id="f-actual" class="num highlight">-</div></div>
+  <div class="card"><div class="label">待刷盘块数</div><div id="f-pending" class="num warn">-</div></div>
   <div class="card"><div class="label">已回收字节</div><div id="f-reclaimed" class="num ok">-</div></div>
 </section>
 
@@ -23,6 +24,25 @@
   <span><i class="sw hole"></i>空洞 hole（不占空间）</span>
   <span><i class="sw zero"></i>写过的零块 zero（可回收）</span>
   <span><i class="sw data"></i>非零块 data</span>
+  <span><i class="sw dirty"></i>金边 = 待刷盘（仅在缓存中，掉电即丢）</span>
+</section>
+
+<section class="panel">
+  <h2>刷盘（掉电演练）</h2>
+  <p class="hint">刷盘只提交“点击时已在缓存”的一批；刷盘进行中的新写入立即可读、留到下一轮。
+    返回成功即整批已写入 raw 镜像；中途 kill -9 后重启，进行中的一批要么全部留下、要么全部丢弃；
+    从未刷盘的写入随进程退出丢失。可用环境变量 FLUSH_DELAY_MS 放慢回写以放大掉电窗口。</p>
+  <div class="row">
+    <button id="btn-flush">立即刷盘</button>
+    <span id="flush-state" class="state">空闲</span>
+  </div>
+  <table class="kv">
+    <tr><td>待刷盘块数</td><td id="fl-pending" class="mono">0</td></tr>
+    <tr><td>最近一批（块数 / 耗时）</td><td id="fl-last" class="mono">-</td></tr>
+    <tr><td>已完成轮数</td><td id="fl-rounds" class="mono">0</td></tr>
+    <tr><td>本次启动恢复重放块数</td><td id="fl-recovered" class="mono">0</td></tr>
+    <tr><td>错误</td><td id="fl-error" class="mono err">-</td></tr>
+  </table>
 </section>
 
 <section class="panel">

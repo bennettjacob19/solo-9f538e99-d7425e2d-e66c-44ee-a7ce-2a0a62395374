@@ -345,6 +345,8 @@ class TestApiCore(TempImageTestCase):
         self.assertEqual(status["stats"]["block_count"], 16)
         self.assertEqual(len(status["blocks"]), 16)
         self.assertEqual(status["reclaim"]["running"], False)
+        self.assertEqual(status["flush"]["pending_blocks"], 0)
+        self.assertEqual(status["flush"]["running"], False)
         info = self.core.read_block(4)  # 16 块镜像：4..7 为写过的零块
         self.assertEqual(info["state"], STATE_ZERO)
         self.assertEqual(len(bytes.fromhex(info["hex"])), BLOCK_SIZE)
@@ -362,11 +364,16 @@ class TestApiCore(TempImageTestCase):
     def test_write_then_read_roundtrip_and_reclaim_via_api(self):
         payload = (b"API-WRITE" + b"\x33" * BLOCK_SIZE)[:BLOCK_SIZE]
         self.core.write_block(0, {"hex": payload.hex()})
+        # 写回缓存：读立即看到最新值，但 raw 镜像尚未变化
         self.assertEqual(bytes.fromhex(self.core.get_block(0)["hex"]), payload)
+        self.assertEqual(self.core.status()["flush"]["pending_blocks"], 1)
 
         self.core.write_pattern(0, "zero")
         self.assertEqual(self.core.get_block(0)["state"], STATE_ZERO)
 
+        # 回收只作用于 raw 镜像：先刷盘把零块落盘，回收才能把它打成洞
+        self.core.flush()
+        self.assertEqual(self.core.status()["flush"]["pending_blocks"], 0)
         before = self.core.status()["stats"]["actual_bytes"]
         self.core.reclaim_start()
         st = self.core.manager.state()

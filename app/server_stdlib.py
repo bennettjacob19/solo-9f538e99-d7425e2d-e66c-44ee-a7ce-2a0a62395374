@@ -10,7 +10,8 @@ from __future__ import annotations
 import json
 import os
 import re
-from wsgiref.simple_server import make_server
+from socketserver import ThreadingMixIn
+from wsgiref.simple_server import WSGIServer, make_server
 
 from .api import ApiCore, ApiError
 from .constants import DEFAULT_BLOCK_COUNT
@@ -18,6 +19,12 @@ from .disk import create_image
 
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 _CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8"}
+
+
+class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
+    """多线程 WSGI 服务器：刷盘在等宿主盘写入时，块读写请求照样被处理。"""
+
+    daemon_threads = True
 
 _BLOCK_RE = re.compile(r"^/api/blocks/(\d+)(/read|/write|/write-pattern/(zero|data))?$")
 
@@ -55,6 +62,8 @@ def _route(environ, method: str, path: str, core: ApiCore):
         )
     if path == "/api/status" and method == "GET":
         return _json(core.status()), 200, "application/json"
+    if path == "/api/flush" and method == "POST":
+        return _json(core.flush()), 200, "application/json"
     if path == "/api/reclaim/start" and method == "POST":
         return _json(core.reclaim_start()), 200, "application/json"
     if path == "/api/reclaim/cancel" and method == "POST":
@@ -105,11 +114,12 @@ def _reason(code: int) -> str:
 def main() -> None:
     image_path = os.environ.get("IMAGE_PATH", "/data/disk.raw")
     block_count = int(os.environ.get("BLOCK_COUNT", str(DEFAULT_BLOCK_COUNT)))
+    flush_delay_ms = int(os.environ.get("FLUSH_DELAY_MS", "0"))
     port = int(os.environ.get("PORT", "8000"))
     disk = create_image(image_path, block_count)
-    application = create_wsgi_app(ApiCore(disk))
+    application = create_wsgi_app(ApiCore(disk, flush_delay_ms=flush_delay_ms))
     print(f"[stdlib] serving on 0.0.0.0:{port}, image={image_path}")
-    with make_server("0.0.0.0", port, application) as httpd:
+    with make_server("0.0.0.0", port, application, server_class=_ThreadingWSGIServer) as httpd:
         httpd.serve_forever()
 
 

@@ -6,3 +6,4 @@ data/
 *.raw
 .venv/
 venv/
+*.journal

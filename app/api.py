@@ -1,8 +1,13 @@
-"""与 Web 框架无关的 API 逻辑，Flask 与 stdlib 回退入口共用。"""
+"""与 Web 框架无关的 API 逻辑，Flask 与 stdlib 回退入口共用。
+
+块读写走写回缓存（WriteBackCache）：写入先进内存缓存、读立即生效，
+刷盘才落 raw 镜像；零块回收仍直接作用于 raw 镜像，两者互不影响。
+"""
 from __future__ import annotations
 
 import binascii
 
+from .cache import FlushBusyError, WriteBackCache
 from .constants import BLOCK_SIZE
 from .disk import DiskImage
 from .reclaim import ReclaimManager
@@ -16,23 +21,28 @@ class ApiError(Exception):
 
 
 class ApiCore:
-    def __init__(self, disk: DiskImage):
+    def __init__(self, disk: DiskImage, flush_delay_ms: int = 0):
         self.disk = disk
+        self.cache = WriteBackCache(disk, flush_delay_ms=flush_delay_ms)
         self.manager = ReclaimManager(disk)
 
     # -- GET /api/status ----------------------------------------------------
     def status(self) -> dict:
-        snap = self.disk.snapshot()
-        snap["reclaim"] = self.manager.state()
-        return snap
+        return {
+            "stats": self.disk.stats(),
+            # 缓存视角的块状态：脏块按缓存内容展示，与读到的值一致
+            "blocks": [self.cache.block_state(i) for i in range(self.disk.block_count)],
+            "reclaim": self.manager.state(),
+            "flush": self.cache.flush_state(),
+        }
 
     # -- GET /api/blocks/<i> ------------------------------------------------
     def get_block(self, index: int) -> dict:
         self._check_index(index)
-        data = self.disk.read_block(index)
+        data = self.cache.read_block(index)
         return {
             "index": index,
-            "state": self.disk.block_state(index),
+            "state": self.cache.block_state(index),
             "hex": data.hex(),
             "ascii_preview": _ascii_preview(data),
         }
@@ -54,9 +64,23 @@ class ApiCore:
             raise ApiError(
                 400, f"一次写入必须恰好 {BLOCK_SIZE} 字节，收到 {len(data)} 字节"
             )
-        # 正常读写不等待回收扫描：块锁只在单个 4KiB 操作期间持有
-        self.disk.write_block(index, data)
-        return {"index": index, "written_bytes": BLOCK_SIZE, "state": self.disk.block_state(index)}
+        # 写入只进缓存，立即返回；刷盘前不触碰 raw 镜像，也不等待进行中的刷盘
+        self.cache.write_block(index, data)
+        return {
+            "index": index,
+            "written_bytes": BLOCK_SIZE,
+            "state": self.cache.block_state(index),
+            "pending_blocks": self.cache.pending_count(),
+        }
+
+    # -- POST /api/flush ----------------------------------------------------
+    def flush(self) -> dict:
+        """同步刷盘：返回成功时整批已写入 raw 镜像；进行中则 409 忙。"""
+        try:
+            result = self.cache.flush()
+        except FlushBusyError:
+            raise ApiError(409, "上一轮刷盘尚未完成，请稍后再试")
+        return {"ok": True, **result, "pending_blocks": self.cache.pending_count()}
 
     # -- POST /api/reclaim/start、/cancel -----------------------------------
     def reclaim_start(self) -> dict:
@@ -75,8 +99,12 @@ class ApiCore:
             data = (marker + b"\x5a" * BLOCK_SIZE)[:BLOCK_SIZE]
         else:
             raise ApiError(400, "未知 pattern，仅支持 zero / data")
-        self.disk.write_block(index, data)
-        return {"index": index, "state": self.disk.block_state(index)}
+        self.cache.write_block(index, data)
+        return {
+            "index": index,
+            "state": self.cache.block_state(index),
+            "pending_blocks": self.cache.pending_count(),
+        }
 
     def _check_index(self, index: int) -> None:
         if not isinstance(index, int) or not (0 <= index < self.disk.block_count):
